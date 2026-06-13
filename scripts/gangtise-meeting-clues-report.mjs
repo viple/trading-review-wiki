@@ -11,13 +11,15 @@ const OUTPUT_DIR = "/Users/jiegege/Desktop/杰杰杰/raw/研报新闻/投研线�
 const TEMP_PG_NODE_MODULES = "/private/tmp/codex-gangtise-meeting-clues/node_modules"
 const FALLBACK_DB_CONFIG_PATH = "/Users/jiegege/.codex/automations/gangtise-schema/db-config.json"
 const DEFAULT_CONFIG = {
-  host: "222.240.196.158",
-  port: 51943,
-  user: "shihao",
-  database: "cn_alternative_db",
   schema: "public",
   table: "gangtise_meeting_clues",
   timeZone: "Asia/Shanghai",
+}
+
+function quotePgIdentifier(identifier) {
+  const clean = String(identifier ?? "")
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(clean)) throw new Error(`Unsafe PostgreSQL identifier: ${clean}`)
+  return `"${clean.replace(/"/g, '""')}"`
 }
 
 function pad(value) {
@@ -201,32 +203,48 @@ async function loadPgClient() {
   throw new Error(`Missing PostgreSQL client. Install it temporarily with: npm install --prefix /private/tmp/codex-gangtise-meeting-clues pg`)
 }
 
-async function loadPassword() {
-  if (process.env.PG_SHIHAO_PASSWORD) return process.env.PG_SHIHAO_PASSWORD
-
+async function readLocalDbConfig() {
+  const configPath = process.env.PG_SHIHAO_CONFIG_PATH || FALLBACK_DB_CONFIG_PATH
   try {
-    const rawConfig = await fs.readFile(FALLBACK_DB_CONFIG_PATH, "utf8")
+    const rawConfig = await fs.readFile(configPath, "utf8")
     const config = JSON.parse(rawConfig)
-    const sameConnection =
-      config.host === DEFAULT_CONFIG.host &&
-      Number(config.port) === DEFAULT_CONFIG.port &&
-      config.user === DEFAULT_CONFIG.user &&
-      config.database === DEFAULT_CONFIG.database
-
-    if (sameConnection && config.password) return config.password
+    return config && typeof config === "object" && !Array.isArray(config) ? config : {}
   } catch {}
-
-  throw new Error("PG_SHIHAO_PASSWORD is not set, and no matching local Gangtise DB config was found.")
+  return {}
 }
 
-async function fetchRows({ password, startAt, endAt }) {
+async function loadDbConfig() {
+  const localConfig = await readLocalDbConfig()
+  const rawPort = process.env.PG_SHIHAO_PORT ?? localConfig.port
+  const config = {
+    host: process.env.PG_SHIHAO_HOST ?? localConfig.host,
+    port: rawPort === undefined || rawPort === null || rawPort === "" ? undefined : Number(rawPort),
+    user: process.env.PG_SHIHAO_USER ?? localConfig.user,
+    password: process.env.PG_SHIHAO_PASSWORD ?? localConfig.password,
+    database: process.env.PG_SHIHAO_DATABASE ?? localConfig.database,
+    schema: process.env.GANGTISE_MEETING_CLUES_SCHEMA ?? process.env.PG_SHIHAO_SCHEMA ?? localConfig.schema ?? DEFAULT_CONFIG.schema,
+    table: process.env.GANGTISE_MEETING_CLUES_TABLE ?? localConfig.gangtiseMeetingCluesTable ?? localConfig.table ?? DEFAULT_CONFIG.table,
+  }
+  const missing = []
+  if (!config.host) missing.push("PG_SHIHAO_HOST")
+  if (!Number.isFinite(config.port) || config.port <= 0) missing.push("PG_SHIHAO_PORT")
+  if (!config.user) missing.push("PG_SHIHAO_USER")
+  if (!config.password) missing.push("PG_SHIHAO_PASSWORD")
+  if (!config.database) missing.push("PG_SHIHAO_DATABASE")
+  if (!config.schema) missing.push("PG_SHIHAO_SCHEMA")
+  if (!config.table) missing.push("GANGTISE_MEETING_CLUES_TABLE")
+  if (missing.length > 0) throw new Error(`${missing.join(", ")} is not set, and no complete local Gangtise DB config was found.`)
+  return config
+}
+
+async function fetchRows({ config, startAt, endAt }) {
   const Client = await loadPgClient()
   const client = new Client({
-    host: DEFAULT_CONFIG.host,
-    port: DEFAULT_CONFIG.port,
-    user: DEFAULT_CONFIG.user,
-    password,
-    database: DEFAULT_CONFIG.database,
+    host: config.host,
+    port: config.port,
+    user: config.user,
+    password: config.password,
+    database: config.database,
     ssl: false,
   })
 
@@ -235,7 +253,7 @@ async function fetchRows({ password, startAt, endAt }) {
     const result = await client.query(
       `
         select id, pub_time, content, detail_topic, ai_summary, topic_target_names
-        from ${DEFAULT_CONFIG.schema}.${DEFAULT_CONFIG.table}
+        from ${quotePgIdentifier(config.schema)}.${quotePgIdentifier(config.table)}
         where pub_time >= $1::timestamptz
           and pub_time < $2::timestamptz
         order by pub_time asc, id asc
@@ -260,10 +278,10 @@ async function writeMarkdown(content, meta) {
 }
 
 async function main() {
-  const password = await loadPassword()
+  const dbConfig = await loadDbConfig()
 
   const meta = getRunTimestamps(readPubDateOverride())
-  const rows = await fetchRows({ password, startAt: meta.startAt, endAt: meta.endAt })
+  const rows = await fetchRows({ config: dbConfig, startAt: meta.startAt, endAt: meta.endAt })
   await ensureOutputDir()
   const markdown = renderMarkdown(rows, meta)
   const written = await writeMarkdown(markdown, meta)

@@ -1436,16 +1436,56 @@ status: 活跃
         marketValidation: context.marketValidation,
       })
       expect(serialized).toContain("[redacted]")
-      expect(serialized).toContain("cn_stock_db")
-      expect(serialized).toContain("cn_stock_price_daily_wind")
+      expect(serialized).toContain("non_stock_db")
+      expect(serialized).toContain("non_stock_schema")
+      expect(serialized).toContain("non_stock_table")
       expect(serialized).not.toContain("file-secret-test-password")
-      expect(serialized).not.toContain("non_stock_db")
-      expect(serialized).not.toContain("non_stock_table")
     } finally {
       if (previous === undefined) delete process.env.PG_SHIHAO_CONFIG_PATH
       else process.env.PG_SHIHAO_CONFIG_PATH = previous
       if (previousPassword === undefined) delete process.env.PG_SHIHAO_PASSWORD
       else process.env.PG_SHIHAO_PASSWORD = previousPassword
+    }
+  })
+
+  it("does not synthesize public stock SQL connection defaults when local config is missing", async () => {
+    const saved = {
+      PG_SHIHAO_CONFIG_PATH: process.env.PG_SHIHAO_CONFIG_PATH,
+      PG_SHIHAO_HOST: process.env.PG_SHIHAO_HOST,
+      PG_SHIHAO_PORT: process.env.PG_SHIHAO_PORT,
+      PG_SHIHAO_USER: process.env.PG_SHIHAO_USER,
+      PG_SHIHAO_PASSWORD: process.env.PG_SHIHAO_PASSWORD,
+      PG_SHIHAO_DATABASE: process.env.PG_SHIHAO_DATABASE,
+      PG_SHIHAO_SCHEMA: process.env.PG_SHIHAO_SCHEMA,
+      PG_SHIHAO_STOCK_DAILY_TABLE: process.env.PG_SHIHAO_STOCK_DAILY_TABLE,
+    }
+    for (const key of Object.keys(saved)) delete process.env[key]
+    try {
+      const context = await buildAskRetrievalContext({
+        projectPath: tmpRoot,
+        query: "SZ000001 最近20个交易日涨跌幅",
+        sources: "stock-price",
+      })
+
+      const serialized = JSON.stringify({
+        selectedSources: context.selectedSources,
+        nativeQueries: context.nativeQueries,
+        retrievalWarnings: context.retrievalWarnings,
+        sourceRegistry: context.sourceRegistry,
+        marketValidation: context.marketValidation,
+      })
+      expect(serialized).toContain("PG_SHIHAO_HOST")
+      expect(serialized).toContain("PG_SHIHAO_PORT")
+      const stockSource = context.selectedSources.find((source) => source.id === "stock_daily_sql")
+      expect(stockSource.config.host).toBeUndefined()
+      expect(stockSource.config.port).toBeUndefined()
+      expect(stockSource.config.user).toBeUndefined()
+      expect(stockSource.config.database).toBe("cn_stock_db")
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
     }
   })
 	})

@@ -117,11 +117,11 @@ export const TEMPORAL_FACT_SOURCE_KINDS = [
   "market_price",
   "manual_review",
 ]
+const ASK_STOCK_DAILY_KEYCHAIN_SERVICE = "trading-wiki-cn-stock-db"
+const ASK_STOCK_DAILY_KEYCHAIN_ACCOUNT = "shihao"
 const ASK_STOCK_DAILY_DEFAULT_DATABASE = "cn_stock_db"
 const ASK_STOCK_DAILY_DEFAULT_SCHEMA = "public"
 const ASK_STOCK_DAILY_DEFAULT_TABLE = "cn_stock_price_daily_wind"
-const ASK_STOCK_DAILY_KEYCHAIN_SERVICE = "trading-wiki-cn-stock-db"
-const ASK_STOCK_DAILY_KEYCHAIN_ACCOUNT = "shihao"
 const COMPANY_TUSHARE_KEYCHAIN_SERVICE = "trading-wiki-tushare-token"
 const COMPANY_TUSHARE_KEYCHAIN_ACCOUNT = "tushare"
 const COMPANY_TAVILY_KEYCHAIN_SERVICE = "trading-wiki-tavily-api-key"
@@ -4130,20 +4130,34 @@ function readStockDailyPgPasswordFromKeychain(env = process.env, options = {}) {
 function getStockDailyPgConfig(env = process.env, options = {}) {
   const fileConfig = readStockDailyPgConfigFile(env, options)
   const explicitPassword = options.pgPassword ?? env.PG_SHIHAO_PASSWORD ?? fileConfig.config.password
+  const rawPort = options.pgPort ?? env.PG_SHIHAO_PORT ?? fileConfig.config.port
   return {
-    host: options.pgHost ?? env.PG_SHIHAO_HOST ?? fileConfig.config.host ?? "222.240.196.158",
-    port: Number(options.pgPort ?? env.PG_SHIHAO_PORT ?? fileConfig.config.port ?? 51943),
-    user: options.pgUser ?? env.PG_SHIHAO_USER ?? fileConfig.config.user ?? "shihao",
+    host: options.pgHost ?? env.PG_SHIHAO_HOST ?? fileConfig.config.host,
+    port: rawPort === undefined || rawPort === null || rawPort === "" ? undefined : Number(rawPort),
+    user: options.pgUser ?? env.PG_SHIHAO_USER ?? fileConfig.config.user,
     password: explicitPassword ?? readStockDailyPgPasswordFromKeychain(env, options),
-    database: options.pgDatabase ?? env.PG_SHIHAO_DATABASE ?? ASK_STOCK_DAILY_DEFAULT_DATABASE,
-    schema: options.pgSchema ?? env.PG_SHIHAO_SCHEMA ?? ASK_STOCK_DAILY_DEFAULT_SCHEMA,
-    table: options.pgTable ?? env.PG_SHIHAO_STOCK_DAILY_TABLE ?? ASK_STOCK_DAILY_DEFAULT_TABLE,
+    database: options.pgDatabase ?? env.PG_SHIHAO_DATABASE ?? fileConfig.config.database ?? ASK_STOCK_DAILY_DEFAULT_DATABASE,
+    schema: options.pgSchema ?? env.PG_SHIHAO_SCHEMA ?? fileConfig.config.schema ?? ASK_STOCK_DAILY_DEFAULT_SCHEMA,
+    table: options.pgTable ?? env.PG_SHIHAO_STOCK_DAILY_TABLE ?? fileConfig.config.table ?? ASK_STOCK_DAILY_DEFAULT_TABLE,
     configError: fileConfig.error,
   }
 }
 
 function hasUsableStockDailyPgConfig(config) {
   return Boolean(config.host && config.port && config.user && config.password && config.database && config.schema && config.table)
+}
+
+function stockDailyPgConfigUnavailableReason(config) {
+  if (config.configError) return config.configError
+  const missing = []
+  if (!config.host) missing.push("PG_SHIHAO_HOST")
+  if (!Number.isFinite(config.port) || config.port <= 0) missing.push("PG_SHIHAO_PORT")
+  if (!config.user) missing.push("PG_SHIHAO_USER")
+  if (!config.password) missing.push("PG_SHIHAO_PASSWORD")
+  if (!config.database) missing.push("PG_SHIHAO_DATABASE")
+  if (!config.schema) missing.push("PG_SHIHAO_SCHEMA")
+  if (!config.table) missing.push("PG_SHIHAO_STOCK_DAILY_TABLE")
+  return missing.length > 0 ? `${missing.join(", ")} is not set` : "stock SQL config is not usable"
 }
 
 function redactPgConfig(config) {
@@ -4212,7 +4226,7 @@ async function describeStockDailySqlSource(options = {}) {
     return { ok: columns.ready, config: redactPgConfig(config), columns, error: columns.ready ? null : "stockDailyColumns missing ticker/date columns" }
   }
   if (!hasUsableStockDailyPgConfig(config)) {
-    return { ok: false, config: redactPgConfig(config), columns: resolveStockDailyColumns([]), error: config.configError ?? "PG_SHIHAO_PASSWORD is not set" }
+    return { ok: false, config: redactPgConfig(config), columns: resolveStockDailyColumns([]), error: stockDailyPgConfigUnavailableReason(config) }
   }
   const Client = await loadPgClient()
   const client = new Client({
@@ -4381,7 +4395,7 @@ order by ${quotePgIdentifier(columns.date)} asc
 async function executeStockDailyQuery(nativeQuery, options = {}) {
   if (options.stockDailyExecutor) return options.stockDailyExecutor({ nativeQuery, options })
   const config = getStockDailyPgConfig(process.env, options)
-  if (!hasUsableStockDailyPgConfig(config)) throw new Error("PG_SHIHAO_PASSWORD is not set")
+  if (!hasUsableStockDailyPgConfig(config)) throw new Error(stockDailyPgConfigUnavailableReason(config))
   const Client = await loadPgClient()
   const client = new Client({
     host: config.host,
@@ -4593,6 +4607,8 @@ async function searchAskStockDaily(projectPath, query, options = {}) {
 }
 
 function buildBaseAskSources(projectPath, options = {}) {
+  const stockDailyConfig = getStockDailyPgConfig(process.env, options)
+  const hasStockDailyConfig = hasUsableStockDailyPgConfig(stockDailyConfig)
   return [
     {
       id: "wiki_pages",
@@ -4639,10 +4655,10 @@ function buildBaseAskSources(projectPath, options = {}) {
       label: "Stock Daily SQL",
       kind: "sql",
       nativeLanguage: "PostgreSQL SELECT",
-      available: Boolean(options.stockDailyExecutor || options.stockDailyColumns || hasUsableStockDailyPgConfig(getStockDailyPgConfig(process.env, options))),
-      descriptor: `Read-only PostgreSQL source for ${ASK_STOCK_DAILY_DEFAULT_DATABASE}.${ASK_STOCK_DAILY_DEFAULT_SCHEMA}.${ASK_STOCK_DAILY_DEFAULT_TABLE}; daily OHLCV/amount style stock price data.`,
-      config: redactPgConfig(getStockDailyPgConfig(process.env, options)),
-      unavailableReason: hasUsableStockDailyPgConfig(getStockDailyPgConfig(process.env, options)) || options.stockDailyExecutor || options.stockDailyColumns ? null : "PG_SHIHAO_PASSWORD is not set",
+      available: Boolean(options.stockDailyExecutor || options.stockDailyColumns || hasStockDailyConfig),
+      descriptor: "Read-only PostgreSQL stock daily source configured by PG_SHIHAO_* or PG_SHIHAO_CONFIG_PATH; daily OHLCV/amount style stock price data.",
+      config: redactPgConfig(stockDailyConfig),
+      unavailableReason: hasStockDailyConfig || options.stockDailyExecutor || options.stockDailyColumns ? null : stockDailyPgConfigUnavailableReason(stockDailyConfig),
     },
   ]
 }
