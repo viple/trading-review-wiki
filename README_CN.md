@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  📬 作者公众号：<strong>ymj0418</strong> • 欢迎老师们提交 bug 和反馈
+  📬 作者：<strong>杰哥</strong> • 公众号：<strong>ymj0418</strong> • 欢迎老师们提交 bug 和反馈
 </p>
 
 <p align="center">
